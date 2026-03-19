@@ -158,7 +158,16 @@ def open_sys_stream(
     callback,
 ) -> sd.InputStream:
     """Open the system audio input stream, using WASAPI loopback on Windows."""
-    kwargs: dict = dict(
+    if wasapi_loopback:
+        return sd.InputStream(
+            device=device,
+            channels=CHANNELS,
+            samplerate=SAMPLE_RATE,
+            dtype="float32",
+            callback=callback,
+        )
+
+    return sd.InputStream(
         device=device,
         samplerate=SAMPLE_RATE,
         channels=CHANNELS,
@@ -166,17 +175,6 @@ def open_sys_stream(
         callback=callback,
         blocksize=1024,
     )
-    if wasapi_loopback:
-        # sounddevice exposes WASAPI extras via extra_settings
-        try:
-            import sounddevice as _sd
-
-            wasapi_settings = _sd.WasapiSettings(loopback=True)
-            kwargs["extra_settings"] = wasapi_settings
-        except AttributeError:
-            # Older sounddevice — try low-level approach
-            kwargs["extra_settings"] = None
-    return sd.InputStream(**kwargs)
 
 
 def mix_streams(mic_data: np.ndarray, sys_data: np.ndarray) -> np.ndarray:
