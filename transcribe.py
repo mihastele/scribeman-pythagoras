@@ -30,13 +30,14 @@ except ImportError:
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-SAMPLE_RATE = 16000   # Whisper expects 16 kHz mono
-CHANNELS    = 1
-OS          = platform.system()   # "Windows", "Linux", "Darwin"
+SAMPLE_RATE = 16000  # Whisper expects 16 kHz mono
+CHANNELS = 1
+OS = platform.system()  # "Windows", "Linux", "Darwin"
 
 # ---------------------------------------------------------------------------
 # Session setup
 # ---------------------------------------------------------------------------
+
 
 def new_session(output_dir: Path) -> tuple[str, Path]:
     session_id = str(uuid.uuid4())
@@ -44,9 +45,7 @@ def new_session(output_dir: Path) -> tuple[str, Path]:
     session_file = output_dir / f"{session_id}.txt"
     started_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     session_file.write_text(
-        f"Session ID : {session_id}\n"
-        f"Started    : {started_at}\n"
-        f"{'─' * 60}\n\n",
+        f"Session ID : {session_id}\nStarted    : {started_at}\n{'─' * 60}\n\n",
         encoding="utf-8",
     )
     return session_id, session_file
@@ -61,15 +60,22 @@ def append_transcript(session_file: Path, text: str, timestamp: str) -> None:
 # Audio device helpers
 # ---------------------------------------------------------------------------
 
+
 def list_devices() -> None:
     """Print all audio devices with their index and host API."""
     devices = sd.query_devices()
     host_apis = sd.query_hostapis()
     print(f"\nAvailable audio devices (OS: {OS}):\n")
     print(f"  {'Idx':>3}  {'I':>2}  {'O':>2}  {'Host API':<14}  Name")
-    print(f"  {'───':>3}  {'──':>2}  {'──':>2}  {'──────────────':<14}  ────────────────────────────")
+    print(
+        f"  {'───':>3}  {'──':>2}  {'──':>2}  {'──────────────':<14}  ────────────────────────────"
+    )
     for i, dev in enumerate(devices):
-        api_name = host_apis[dev["hostapi"]]["name"] if dev["hostapi"] < len(host_apis) else "?"
+        api_name = (
+            host_apis[dev["hostapi"]]["name"]
+            if dev["hostapi"] < len(host_apis)
+            else "?"
+        )
         print(
             f"  {i:>3}  {dev['max_input_channels']:>2}  {dev['max_output_channels']:>2}"
             f"  {api_name:<14}  {dev['name']}"
@@ -113,9 +119,7 @@ def _find_linux_monitor() -> int | None:
     devices = sd.query_devices()
     for i, dev in enumerate(devices):
         name = dev["name"].lower()
-        if dev["max_input_channels"] > 0 and (
-            "monitor" in name or "loopback" in name
-        ):
+        if dev["max_input_channels"] > 0 and ("monitor" in name or "loopback" in name):
             return i
     return None
 
@@ -166,6 +170,7 @@ def open_sys_stream(
         # sounddevice exposes WASAPI extras via extra_settings
         try:
             import sounddevice as _sd
+
             wasapi_settings = _sd.WasapiSettings(loopback=True)
             kwargs["extra_settings"] = wasapi_settings
         except AttributeError:
@@ -178,13 +183,20 @@ def mix_streams(mic_data: np.ndarray, sys_data: np.ndarray) -> np.ndarray:
     """Average two mono float32 arrays, handling length mismatch."""
     min_len = min(len(mic_data), len(sys_data))
     if min_len == 0:
-        return mic_data.astype(np.float32) if len(mic_data) else sys_data.astype(np.float32)
-    return (mic_data[:min_len].astype(np.float32) + sys_data[:min_len].astype(np.float32)) / 2.0
+        return (
+            mic_data.astype(np.float32)
+            if len(mic_data)
+            else sys_data.astype(np.float32)
+        )
+    return (
+        mic_data[:min_len].astype(np.float32) + sys_data[:min_len].astype(np.float32)
+    ) / 2.0
 
 
 # ---------------------------------------------------------------------------
 # Transcription worker
 # ---------------------------------------------------------------------------
+
 
 class TranscribeWorker(threading.Thread):
     def __init__(
@@ -195,11 +207,11 @@ class TranscribeWorker(threading.Thread):
         verbose: bool = True,
     ):
         super().__init__(daemon=True)
-        self.audio_queue   = audio_queue
-        self.model         = model
-        self.session_file  = session_file
-        self.verbose       = verbose
-        self._stop_event   = threading.Event()
+        self.audio_queue = audio_queue
+        self.model = model
+        self.session_file = session_file
+        self.verbose = verbose
+        self._stop_event = threading.Event()
 
     def stop(self) -> None:
         self._stop_event.set()
@@ -213,8 +225,8 @@ class TranscribeWorker(threading.Thread):
 
             segments, _info = self.model.transcribe(
                 chunk,
-                task="translate",                          # always output English
-                language=None,                             # auto-detect
+                task="translate",  # always output English
+                language=None,  # auto-detect
                 beam_size=5,
                 vad_filter=True,
                 vad_parameters={"min_silence_duration_ms": 500},
@@ -236,6 +248,7 @@ class TranscribeWorker(threading.Thread):
 # Main capture loop
 # ---------------------------------------------------------------------------
 
+
 def run(args: argparse.Namespace) -> None:
     if args.list_devices:
         list_devices()
@@ -255,7 +268,7 @@ def run(args: argparse.Namespace) -> None:
 
     model = WhisperModel(
         args.model,
-        device="auto",       # CUDA if available, else CPU
+        device="cpu",
         compute_type="int8",
     )
     print("ready.")
@@ -264,7 +277,9 @@ def run(args: argparse.Namespace) -> None:
     wasapi_loopback = False
     if args.sys_device is not None:
         sys_device = args.sys_device
-        wasapi_loopback = (OS == "Windows")  # assume WASAPI loopback if user specified on Windows
+        wasapi_loopback = (
+            OS == "Windows"
+        )  # assume WASAPI loopback if user specified on Windows
     else:
         sys_device, wasapi_loopback = find_system_audio_source()
         if sys_device is not None:
@@ -279,7 +294,7 @@ def run(args: argparse.Namespace) -> None:
 
     print("  Recording … Press Ctrl+C to stop.\n")
 
-    mic_device   = args.mic_device
+    mic_device = args.mic_device
     chunk_frames = int(SAMPLE_RATE * args.chunk_sec)
     audio_queue: "queue.Queue[np.ndarray]" = queue.Queue(maxsize=8)
 
@@ -301,8 +316,16 @@ def run(args: argparse.Namespace) -> None:
         while not stop_flag.is_set():
             time.sleep(args.chunk_sec)
             with buffer_lock:
-                mic_data = np.concatenate(mic_buffer) if mic_buffer else np.zeros(chunk_frames, dtype=np.float32)
-                sys_data = np.concatenate(sys_buffer) if sys_buffer else np.array([], dtype=np.float32)
+                mic_data = (
+                    np.concatenate(mic_buffer)
+                    if mic_buffer
+                    else np.zeros(chunk_frames, dtype=np.float32)
+                )
+                sys_data = (
+                    np.concatenate(sys_buffer)
+                    if sys_buffer
+                    else np.array([], dtype=np.float32)
+                )
                 mic_buffer.clear()
                 sys_buffer.clear()
 
@@ -399,6 +422,7 @@ def _no_sys_audio_hint() -> str:
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
+
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
