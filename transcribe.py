@@ -292,17 +292,27 @@ def run(args: argparse.Namespace) -> None:
 
     print("  Recording … Press Ctrl+C to stop.\n")
 
+    include_mic = args.include_mic or args.mic_device is not None
     mic_device = args.mic_device
     chunk_frames = int(SAMPLE_RATE * args.chunk_sec)
     audio_queue: "queue.Queue[np.ndarray]" = queue.Queue(maxsize=8)
 
     mic_buffer: list[np.ndarray] = []
     sys_buffer: list[np.ndarray] = []
+    full_mic_audio: list[np.ndarray] = []
+    full_sys_audio: list[np.ndarray] = []
     buffer_lock = threading.Lock()
 
-    def mic_callback(indata, frames, time_info, status):
-        with buffer_lock:
-            mic_buffer.append(indata[:, 0].copy())
+    def dummy_mic_callback(indata, frames, time_info, status):
+        pass
+
+    if include_mic:
+
+        def mic_callback(indata, frames, time_info, status):
+            with buffer_lock:
+                mic_buffer.append(indata[:, 0].copy())
+    else:
+        mic_callback = dummy_mic_callback
 
     def sys_callback(indata, frames, time_info, status):
         with buffer_lock:
@@ -317,15 +327,22 @@ def run(args: argparse.Namespace) -> None:
                 mic_data = (
                     np.concatenate(mic_buffer)
                     if mic_buffer
-                    else np.zeros(chunk_frames, dtype=np.float32)
+                    else np.array([], dtype=np.float32)
                 )
                 sys_data = (
                     np.concatenate(sys_buffer)
                     if sys_buffer
                     else np.array([], dtype=np.float32)
                 )
+                if len(mic_data) > 0:
+                    full_mic_audio.append(mic_data.copy())
+                if len(sys_data) > 0:
+                    full_sys_audio.append(sys_data.copy())
                 mic_buffer.clear()
                 sys_buffer.clear()
+
+            if len(sys_data) == 0 and len(mic_data) == 0:
+                continue
 
             if sys_device is not None and len(sys_data) > 0:
                 chunk = mix_streams(mic_data, sys_data)
@@ -350,15 +367,16 @@ def run(args: argparse.Namespace) -> None:
     # ── Open audio streams ──────────────────────────────────────────────────
     streams: list[sd.InputStream] = []
 
-    mic_stream = sd.InputStream(
-        device=mic_device,
-        samplerate=SAMPLE_RATE,
-        channels=CHANNELS,
-        dtype="float32",
-        callback=mic_callback,
-        blocksize=1024,
-    )
-    streams.append(mic_stream)
+    if include_mic:
+        mic_stream = sd.InputStream(
+            device=mic_device,
+            samplerate=SAMPLE_RATE,
+            channels=CHANNELS,
+            dtype="float32",
+            callback=mic_callback,
+            blocksize=1024,
+        )
+        streams.append(mic_stream)
 
     if sys_device is not None:
         try:
@@ -386,6 +404,50 @@ def run(args: argparse.Namespace) -> None:
         feeder.join(timeout=args.chunk_sec + 2)
         worker.stop()
         worker.join(timeout=10)
+
+        with buffer_lock:
+            full_mic_data = (
+                np.concatenate(full_mic_audio)
+                if full_mic_audio
+                else np.array([], dtype=np.float32)
+            )
+            full_sys_data = (
+                np.concatenate(full_sys_audio)
+                if full_sys_audio
+                else np.array([], dtype=np.float32)
+            )
+
+        if len(full_sys_data) > 0 and len(full_mic_data) > 0:
+            full_audio = mix_streams(full_mic_data, full_sys_data)
+        elif len(full_mic_data) > 0:
+            full_audio = full_mic_data.astype(np.float32)
+        elif len(full_sys_data) > 0:
+            full_audio = full_sys_data.astype(np.float32)
+        else:
+            full_audio = np.array([], dtype=np.float32)
+
+        if len(full_audio) > 0:
+            print("\n  Transcribing full audio …")
+            max_val = np.abs(full_audio).max()
+            if max_val > 0:
+                full_audio = full_audio / max_val
+
+            segments, _info = model.transcribe(
+                full_audio,
+                task="translate",
+                language=None,
+                beam_size=5,
+                vad_filter=True,
+                vad_parameters={"min_silence_duration_ms": 500},
+            )
+
+            text_parts = [seg.text.strip() for seg in segments if seg.text.strip()]
+            if text_parts:
+                full_text = " ".join(text_parts)
+                ts = datetime.now().strftime("%H:%M:%S")
+                append_transcript(session_file, f"FULL: {full_text}", ts)
+                if not args.quiet:
+                    print(f"  [{ts}] FULL: {full_text}")
 
         ended_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         with session_file.open("a", encoding="utf-8") as f:
@@ -446,11 +508,16 @@ def parse_args() -> argparse.Namespace:
         help="Directory to store session txt files",
     )
     p.add_argument(
+        "--include-mic",
+        action="store_true",
+        help="Include microphone audio (default: disabled)",
+    )
+    p.add_argument(
         "--mic-device",
         type=int,
         default=None,
         metavar="INDEX",
-        help="Microphone device index (default: system default)",
+        help="Microphone device index (default: system default, implied when set)",
     )
     p.add_argument(
         "--sys-device",
